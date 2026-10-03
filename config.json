@@ -1,0 +1,12 @@
+{
+  "commands": {},
+  "status_messages": [
+    {"type": "playing", "text": "Making everything safe"},
+    {"type": "watching", "text": "The advertised server: discord.gg/ThbEwc9YmF"},
+    {"type": "listening", "text": "How to be the best Discord Bot"},
+    {"type": "competing", "text": "Dev0630's bot manager system"}
+  ],
+  "owner_id": null,
+  "tags": [],
+  "description": ""
+}
