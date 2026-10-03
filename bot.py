@@ -13,7 +13,13 @@ from discord import app_commands
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-DATA_FILE = "voice_data.json"
+
+# Railway Volume should be mounted at /app/data
+DATA_DIR = "/app/data"
+DATA_FILE = os.path.join(DATA_DIR, "voice_data.json")
+
+# Static bot configuration
+CONFIG_FILE = "config.json"
 
 MAX_CHANNEL_NAME_LENGTH = 100
 CLAIM_DELAY = 10
@@ -50,66 +56,171 @@ server_configs = {}
 #     moderators,
 #     panel_message_id
 # }
+
 temporary_channels = {}
 
 # channel_id -> asyncio.Task
 claim_tasks = {}
+
+# Prevent repeatedly loading data on Discord reconnects
+data_loaded = False
 
 
 # =========================================================
 # PERSISTENCE
 # =========================================================
 
-def load_data():
-    global server_configs, temporary_channels
+def ensure_data_storage():
 
     try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
+
+        os.makedirs(
+            DATA_DIR,
+            exist_ok=True
+        )
+
+        if not os.path.exists(DATA_FILE):
+
+            with open(
+                DATA_FILE,
+                "w",
+                encoding="utf-8"
+            ) as f:
+
+                json.dump(
+                    {
+                        "servers": {},
+                        "temporary_channels": {}
+                    },
+                    f,
+                    indent=2
+                )
+
+    except Exception as e:
+
+        print(
+            f"❌ Failed to initialize data storage: {e}"
+        )
+
+
+def load_data():
+
+    global server_configs
+    global temporary_channels
+
+    ensure_data_storage()
+
+    try:
+
+        with open(
+            DATA_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
             data = json.load(f)
 
-        server_configs = data.get("servers", {})
-        saved_channels = data.get("temporary_channels", {})
+        server_configs = data.get(
+            "servers",
+            {}
+        )
+
+        saved_channels = data.get(
+            "temporary_channels",
+            {}
+        )
 
         temporary_channels = {
             int(channel_id): channel_data
-            for channel_id, channel_data in saved_channels.items()
+            for channel_id, channel_data
+            in saved_channels.items()
         }
 
-        # Make sure older saved channels get the new field.
-        for channel_id, channel_data in temporary_channels.items():
-            channel_data.setdefault("panel_message_id", None)
-            channel_data.setdefault("locked", False)
-            channel_data.setdefault("hidden", False)
-            channel_data.setdefault("allowed_users", [])
-            channel_data.setdefault("denied_users", [])
-            channel_data.setdefault("moderators", [])
+        # -------------------------------------------------
+        # Upgrade older saved channels
+        # -------------------------------------------------
 
-        print("✅ Voice configuration loaded.")
+        for channel_id, channel_data in temporary_channels.items():
+
+            channel_data.setdefault(
+                "panel_message_id",
+                None
+            )
+
+            channel_data.setdefault(
+                "locked",
+                False
+            )
+
+            channel_data.setdefault(
+                "hidden",
+                False
+            )
+
+            channel_data.setdefault(
+                "allowed_users",
+                []
+            )
+
+            channel_data.setdefault(
+                "denied_users",
+                []
+            )
+
+            channel_data.setdefault(
+                "moderators",
+                []
+            )
+
+        print(
+            "✅ Voice configuration loaded."
+        )
 
     except FileNotFoundError:
+
         server_configs = {}
         temporary_channels = {}
 
+        save_data()
+
     except json.JSONDecodeError as e:
-        print(f"❌ Invalid JSON in {DATA_FILE}: {e}")
+
+        print(
+            f"❌ Invalid JSON in {DATA_FILE}: {e}"
+        )
+
         server_configs = {}
         temporary_channels = {}
 
     except Exception as e:
-        print(f"❌ Failed to load voice configuration: {e}")
+
+        print(
+            f"❌ Failed to load voice configuration: {e}"
+        )
+
         server_configs = {}
         temporary_channels = {}
 
 
 def save_data():
+
     try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
+
+        ensure_data_storage()
+
+        with open(
+            DATA_FILE,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
             json.dump(
                 {
                     "servers": server_configs,
                     "temporary_channels": {
                         str(channel_id): data
-                        for channel_id, data in temporary_channels.items()
+                        for channel_id, data
+                        in temporary_channels.items()
                     }
                 },
                 f,
@@ -117,19 +228,256 @@ def save_data():
             )
 
     except Exception as e:
-        print(f"❌ Failed to save voice data: {e}")
+
+        print(
+            f"❌ Failed to save voice data: {e}"
+        )
+
+
+# =========================================================
+# STATUS CONFIGURATION
+# =========================================================
+
+def load_status_config():
+
+    try:
+
+        with open(
+            CONFIG_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            config = json.load(f)
+
+        messages = config.get(
+            "status_messages",
+            []
+        )
+
+        interval = config.get(
+            "status_interval",
+            15
+        )
+
+        if not isinstance(
+            messages,
+            list
+        ):
+
+            print(
+                "⚠️ status_messages must be a list."
+            )
+
+            return [], 15
+
+        valid_messages = []
+
+        for status in messages:
+
+            if not isinstance(
+                status,
+                dict
+            ):
+                continue
+
+            status_type = status.get(
+                "type"
+            )
+
+            text = status.get(
+                "text"
+            )
+
+            if not status_type or not text:
+                continue
+
+            status_type = str(
+                status_type
+            ).lower()
+
+            text = str(
+                text
+            )
+
+            if status_type not in {
+                "playing",
+                "watching",
+                "listening",
+                "competing"
+            }:
+
+                print(
+                    f"⚠️ Unknown status type: "
+                    f"{status_type}"
+                )
+
+                continue
+
+            valid_messages.append(
+                {
+                    "type": status_type,
+                    "text": text
+                }
+            )
+
+        try:
+
+            interval = float(
+                interval
+            )
+
+            # Don't spam Discord with presence changes
+            if interval < 5:
+                interval = 5
+
+        except (
+            TypeError,
+            ValueError
+        ):
+
+            interval = 15
+
+        return (
+            valid_messages,
+            interval
+        )
+
+    except FileNotFoundError:
+
+        print(
+            f"⚠️ {CONFIG_FILE} was not found. "
+            "Status rotation disabled."
+        )
+
+        return [], 15
+
+    except json.JSONDecodeError as e:
+
+        print(
+            f"❌ Invalid JSON in {CONFIG_FILE}: {e}"
+        )
+
+        return [], 15
+
+    except Exception as e:
+
+        print(
+            f"❌ Failed to load status configuration: {e}"
+        )
+
+        return [], 15
+
+
+async def update_bot_status(
+    status_type: str,
+    text: str
+):
+
+    try:
+
+        if status_type == "playing":
+
+            activity = discord.Game(
+                name=text
+            )
+
+        elif status_type == "watching":
+
+            activity = discord.Activity(
+                type=discord.ActivityType.watching,
+                name=text
+            )
+
+        elif status_type == "listening":
+
+            activity = discord.Activity(
+                type=discord.ActivityType.listening,
+                name=text
+            )
+
+        elif status_type == "competing":
+
+            activity = discord.Activity(
+                type=discord.ActivityType.competing,
+                name=text
+            )
+
+        else:
+
+            return
+
+        await bot.change_presence(
+            activity=activity,
+            status=discord.Status.online
+        )
+
+    except discord.HTTPException as e:
+
+        print(
+            f"⚠️ Failed to update bot status: {e}"
+        )
+
+
+async def status_rotation_loop():
+
+    await bot.wait_until_ready()
+
+    index = 0
+
+    while not bot.is_closed():
+
+        messages, interval = (
+            load_status_config()
+        )
+
+        if not messages:
+
+            await asyncio.sleep(
+                max(
+                    interval,
+                    5
+                )
+            )
+
+            continue
+
+        status = messages[
+            index % len(messages)
+        ]
+
+        index += 1
+
+        await update_bot_status(
+            status["type"],
+            status["text"]
+        )
+
+        await asyncio.sleep(
+            interval
+        )
 
 
 # =========================================================
 # HELPERS
 # =========================================================
 
-def get_config(guild_id: int):
-    return server_configs.get(str(guild_id))
+def get_config(
+    guild_id: int
+):
+
+    return server_configs.get(
+        str(guild_id)
+    )
 
 
-def get_temporary_channel(channel_id: int):
-    return temporary_channels.get(channel_id)
+def get_temporary_channel(
+    channel_id: int
+):
+
+    return temporary_channels.get(
+        channel_id
+    )
 
 
 def get_member_channel(
@@ -141,7 +489,10 @@ def get_member_channel(
 
     channel = interaction.user.voice.channel
 
-    if not isinstance(channel, discord.VoiceChannel):
+    if not isinstance(
+        channel,
+        discord.VoiceChannel
+    ):
         return None
 
     return channel
@@ -151,67 +502,111 @@ def is_channel_owner(
     interaction: discord.Interaction,
     channel: discord.VoiceChannel
 ):
-    data = get_temporary_channel(channel.id)
+
+    data = get_temporary_channel(
+        channel.id
+    )
 
     if not data:
         return False
 
-    return data.get("owner_id") == interaction.user.id
+    return (
+        data.get("owner_id")
+        == interaction.user.id
+    )
 
 
 def is_channel_manager(
     interaction: discord.Interaction,
     channel: discord.VoiceChannel
 ):
-    data = get_temporary_channel(channel.id)
+
+    data = get_temporary_channel(
+        channel.id
+    )
 
     if not data:
         return False
 
-    if data.get("owner_id") == interaction.user.id:
+    if data.get(
+        "owner_id"
+    ) == interaction.user.id:
+
         return True
 
-    return interaction.user.id in data.get("moderators", [])
+    return (
+        interaction.user.id
+        in data.get(
+            "moderators",
+            []
+        )
+    )
 
 
 def is_allowed_user(
     channel_id: int,
     user_id: int
 ):
-    data = get_temporary_channel(channel_id)
+
+    data = get_temporary_channel(
+        channel_id
+    )
 
     if not data:
         return False
 
-    return user_id in data.get("allowed_users", [])
+    return (
+        user_id
+        in data.get(
+            "allowed_users",
+            []
+        )
+    )
 
 
 def is_denied_user(
     channel_id: int,
     user_id: int
 ):
-    data = get_temporary_channel(channel_id)
+
+    data = get_temporary_channel(
+        channel_id
+    )
 
     if not data:
         return False
 
-    return user_id in data.get("denied_users", [])
+    return (
+        user_id
+        in data.get(
+            "denied_users",
+            []
+        )
+    )
 
 
 def format_voice_name(
     template: str,
     member: discord.Member
 ):
+
     return template.replace(
         "{user}",
         member.display_name
     )[:MAX_CHANNEL_NAME_LENGTH]
 
 
-def cancel_claim_task(channel_id: int):
-    task = claim_tasks.pop(channel_id, None)
+def cancel_claim_task(
+    channel_id: int
+):
+
+    task = claim_tasks.pop(
+        channel_id,
+        None
+    )
 
     if task and not task.done():
+
         task.cancel()
 
 
@@ -222,19 +617,31 @@ def cancel_claim_task(channel_id: int):
 async def apply_channel_permissions(
     channel: discord.VoiceChannel
 ):
-    data = get_temporary_channel(channel.id)
+
+    data = get_temporary_channel(
+        channel.id
+    )
 
     if not data:
         return
 
     guild = channel.guild
 
-    locked = data.get("locked", False)
-    hidden = data.get("hidden", False)
+    locked = data.get(
+        "locked",
+        False
+    )
 
-    default_permissions = discord.PermissionOverwrite(
-        connect=not locked,
-        view_channel=not hidden
+    hidden = data.get(
+        "hidden",
+        False
+    )
+
+    default_permissions = (
+        discord.PermissionOverwrite(
+            connect=not locked,
+            view_channel=not hidden
+        )
     )
 
     await channel.set_permissions(
@@ -252,6 +659,7 @@ async def apply_channel_permissions(
     )
 
     if owner:
+
         await channel.set_permissions(
             owner,
             connect=True,
@@ -264,11 +672,17 @@ async def apply_channel_permissions(
     # MODERATORS
     # -----------------------------------------------------
 
-    for user_id in data.get("moderators", []):
+    for user_id in data.get(
+        "moderators",
+        []
+    ):
 
-        member = guild.get_member(user_id)
+        member = guild.get_member(
+            user_id
+        )
 
         if member:
+
             await channel.set_permissions(
                 member,
                 connect=True,
@@ -281,11 +695,17 @@ async def apply_channel_permissions(
     # ALLOWED USERS
     # -----------------------------------------------------
 
-    for user_id in data.get("allowed_users", []):
+    for user_id in data.get(
+        "allowed_users",
+        []
+    ):
 
-        member = guild.get_member(user_id)
+        member = guild.get_member(
+            user_id
+        )
 
         if member:
+
             await channel.set_permissions(
                 member,
                 connect=True,
@@ -297,11 +717,17 @@ async def apply_channel_permissions(
     # DENIED USERS
     # -----------------------------------------------------
 
-    for user_id in data.get("denied_users", []):
+    for user_id in data.get(
+        "denied_users",
+        []
+    ):
 
-        member = guild.get_member(user_id)
+        member = guild.get_member(
+            user_id
+        )
 
         if member:
+
             await channel.set_permissions(
                 member,
                 connect=False,
@@ -337,8 +763,16 @@ def build_panel_embed(
     hidden = False
 
     if data:
-        locked = data.get("locked", False)
-        hidden = data.get("hidden", False)
+
+        locked = data.get(
+            "locked",
+            False
+        )
+
+        hidden = data.get(
+            "hidden",
+            False
+        )
 
     lock_status = (
         "🔒 Locked"
@@ -357,12 +791,14 @@ def build_panel_embed(
     embed = discord.Embed(
         title="🎙️ Temporary Voice Controls",
         description=(
-            f"Manage **{channel.name}** using the controls below.\n\n"
+            f"Manage **{channel.name}** using "
+            "the controls below.\n\n"
             f"👑 **Owner:** {owner_text}\n"
             f"📊 **Members:** {len(channel.members)} / "
             f"{channel.user_limit or '∞'}\n"
             f"⚙️ **Status:** "
-            f"{lock_status} • {visibility_status}"
+            f"{lock_status} • "
+            f"{visibility_status}"
         ),
         color=(
             discord.Color.red()
@@ -393,13 +829,43 @@ def build_panel_embed(
         inline=True
     )
 
+    # -----------------------------------------------------
+    # Claim is only useful when the owner is absent.
+    # -----------------------------------------------------
+
+    claim_available = True
+
+    if data:
+
+        owner = channel.guild.get_member(
+            data["owner_id"]
+        )
+
+        if (
+            owner
+            and owner.voice
+            and owner.voice.channel == channel
+        ):
+
+            claim_available = False
+
+    ownership_text = (
+        "👑 Transfer\n"
+    )
+
+    if claim_available:
+
+        ownership_text += (
+            "🙋 Claim\n"
+        )
+
+    ownership_text += (
+        "🗑️ Delete"
+    )
+
     embed.add_field(
         name="Ownership",
-        value=(
-            "👑 Transfer\n"
-            "🙋 Claim\n"
-            "🗑️ Delete"
-        ),
+        value=ownership_text,
         inline=True
     )
 
@@ -414,7 +880,9 @@ def build_panel_embed(
 # DYNAMIC CONTROL PANEL VIEW
 # =========================================================
 
-class TempVoiceView(discord.ui.View):
+class TempVoiceView(
+    discord.ui.View
+):
 
     def __init__(
         self,
@@ -426,8 +894,7 @@ class TempVoiceView(discord.ui.View):
         )
 
         # -------------------------------------------------
-        # If no channel was provided, create the complete
-        # persistent fallback view.
+        # Persistent fallback view
         # -------------------------------------------------
 
         if channel is None:
@@ -464,11 +931,31 @@ class TempVoiceView(discord.ui.View):
 
             self.add_item(
                 self.make_button(
+                    "Unlock",
+                    "🔓",
+                    discord.ButtonStyle.success,
+                    "tempvoice:unlock",
+                    self.unlock_button
+                )
+            )
+
+            self.add_item(
+                self.make_button(
                     "Hide",
                     "👁️",
                     discord.ButtonStyle.danger,
                     "tempvoice:hide",
                     self.hide_button
+                )
+            )
+
+            self.add_item(
+                self.make_button(
+                    "Show",
+                    "👀",
+                    discord.ButtonStyle.success,
+                    "tempvoice:show",
+                    self.show_button
                 )
             )
 
@@ -545,7 +1032,7 @@ class TempVoiceView(discord.ui.View):
             return
 
         # -------------------------------------------------
-        # Dynamic state
+        # Dynamic channel view
         # -------------------------------------------------
 
         data = get_temporary_channel(
@@ -591,7 +1078,6 @@ class TempVoiceView(discord.ui.View):
 
         # -------------------------------------------------
         # LOCK / UNLOCK
-        # Only ONE exists at a time.
         # -------------------------------------------------
 
         if locked:
@@ -620,7 +1106,6 @@ class TempVoiceView(discord.ui.View):
 
         # -------------------------------------------------
         # HIDE / SHOW
-        # Only ONE exists at a time.
         # -------------------------------------------------
 
         if hidden:
@@ -705,15 +1190,27 @@ class TempVoiceView(discord.ui.View):
             )
         )
 
-        self.add_item(
-            self.make_button(
-                "Claim",
-                "🙋",
-                discord.ButtonStyle.secondary,
-                "tempvoice:claim",
-                self.claim_button
-            )
+        owner = channel.guild.get_member(
+            data["owner_id"]
         )
+
+        owner_present = (
+            owner
+            and owner.voice
+            and owner.voice.channel == channel
+        )
+
+        if not owner_present:
+
+            self.add_item(
+                self.make_button(
+                    "Claim",
+                    "🙋",
+                    discord.ButtonStyle.secondary,
+                    "tempvoice:claim",
+                    self.claim_button
+                )
+            )
 
         self.add_item(
             self.make_button(
@@ -750,12 +1247,8 @@ class TempVoiceView(discord.ui.View):
         return button
 
     # =====================================================
-    # PANEL UPDATE
-    # =====================================================
-
-    # -----------------------------------------------------
     # RENAME
-    # -----------------------------------------------------
+    # =====================================================
 
     async def rename_button(
         self,
@@ -772,9 +1265,9 @@ class TempVoiceView(discord.ui.View):
                 RenameVoiceModal(channel)
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # LIMIT
-    # -----------------------------------------------------
+    # =====================================================
 
     async def limit_button(
         self,
@@ -791,9 +1284,9 @@ class TempVoiceView(discord.ui.View):
                 LimitVoiceModal(channel)
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # LOCK
-    # -----------------------------------------------------
+    # =====================================================
 
     async def lock_button(
         self,
@@ -812,10 +1305,12 @@ class TempVoiceView(discord.ui.View):
         )
 
         if data.get("locked"):
+
             await interaction.response.send_message(
                 "ℹ️ The channel is already locked.",
                 ephemeral=True
             )
+
             return
 
         data["locked"] = True
@@ -835,9 +1330,9 @@ class TempVoiceView(discord.ui.View):
             ephemeral=True
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # UNLOCK
-    # -----------------------------------------------------
+    # =====================================================
 
     async def unlock_button(
         self,
@@ -856,10 +1351,12 @@ class TempVoiceView(discord.ui.View):
         )
 
         if not data.get("locked"):
+
             await interaction.response.send_message(
                 "ℹ️ The channel is already unlocked.",
                 ephemeral=True
             )
+
             return
 
         data["locked"] = False
@@ -879,9 +1376,9 @@ class TempVoiceView(discord.ui.View):
             ephemeral=True
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # HIDE
-    # -----------------------------------------------------
+    # =====================================================
 
     async def hide_button(
         self,
@@ -900,10 +1397,12 @@ class TempVoiceView(discord.ui.View):
         )
 
         if data.get("hidden"):
+
             await interaction.response.send_message(
                 "ℹ️ The channel is already hidden.",
                 ephemeral=True
             )
+
             return
 
         data["hidden"] = True
@@ -923,9 +1422,9 @@ class TempVoiceView(discord.ui.View):
             ephemeral=True
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # SHOW
-    # -----------------------------------------------------
+    # =====================================================
 
     async def show_button(
         self,
@@ -944,10 +1443,12 @@ class TempVoiceView(discord.ui.View):
         )
 
         if not data.get("hidden"):
+
             await interaction.response.send_message(
                 "ℹ️ The channel is already visible.",
                 ephemeral=True
             )
+
             return
 
         data["hidden"] = False
@@ -967,9 +1468,9 @@ class TempVoiceView(discord.ui.View):
             ephemeral=True
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # ALLOW
-    # -----------------------------------------------------
+    # =====================================================
 
     async def allow_button(
         self,
@@ -991,9 +1492,9 @@ class TempVoiceView(discord.ui.View):
                 ephemeral=True
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # DENY
-    # -----------------------------------------------------
+    # =====================================================
 
     async def deny_button(
         self,
@@ -1015,9 +1516,9 @@ class TempVoiceView(discord.ui.View):
                 ephemeral=True
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # KICK
-    # -----------------------------------------------------
+    # =====================================================
 
     async def kick_button(
         self,
@@ -1039,9 +1540,9 @@ class TempVoiceView(discord.ui.View):
                 ephemeral=True
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # MODERATOR
-    # -----------------------------------------------------
+    # =====================================================
 
     async def moderator_button(
         self,
@@ -1076,9 +1577,9 @@ class TempVoiceView(discord.ui.View):
             ephemeral=True
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # TRANSFER
-    # -----------------------------------------------------
+    # =====================================================
 
     async def transfer_button(
         self,
@@ -1110,9 +1611,9 @@ class TempVoiceView(discord.ui.View):
             ephemeral=True
         )
 
-    # -----------------------------------------------------
+    # =====================================================
     # CLAIM
-    # -----------------------------------------------------
+    # =====================================================
 
     async def claim_button(
         self,
@@ -1130,9 +1631,9 @@ class TempVoiceView(discord.ui.View):
                 channel
             )
 
-    # -----------------------------------------------------
+    # =====================================================
     # DELETE
-    # -----------------------------------------------------
+    # =====================================================
 
     async def delete_button(
         self,
@@ -1206,6 +1707,7 @@ class TempVoiceView(discord.ui.View):
 async def update_control_panel(
     channel: discord.VoiceChannel
 ):
+
     data = get_temporary_channel(
         channel.id
     )
@@ -1216,10 +1718,6 @@ async def update_control_panel(
     message_id = data.get(
         "panel_message_id"
     )
-
-    # -----------------------------------------------------
-    # If we don't know the message ID, create a panel.
-    # -----------------------------------------------------
 
     if not message_id:
 
@@ -1236,15 +1734,19 @@ async def update_control_panel(
         )
 
         await message.edit(
-            embed=build_panel_embed(channel),
-            view=TempVoiceView(channel)
+            embed=build_panel_embed(
+                channel
+            ),
+            view=TempVoiceView(
+                channel
+            )
         )
 
     except discord.NotFound:
 
         print(
-            f"⚠️ TempVoice panel disappeared in "
-            f"{channel.name}; recreating it."
+            f"⚠️ TempVoice panel disappeared "
+            f"in {channel.name}; recreating it."
         )
 
         data["panel_message_id"] = None
@@ -1258,8 +1760,8 @@ async def update_control_panel(
     except discord.Forbidden:
 
         print(
-            f"❌ Cannot access TempVoice panel in "
-            f"{channel.name}."
+            f"❌ Cannot access TempVoice panel "
+            f"in {channel.name}."
         )
 
     except discord.HTTPException as e:
@@ -1286,10 +1788,12 @@ async def send_control_panel(
         return
 
     # -----------------------------------------------------
-    # First try to update an existing panel.
+    # Reuse existing panel
     # -----------------------------------------------------
 
-    if data.get("panel_message_id"):
+    if data.get(
+        "panel_message_id"
+    ):
 
         try:
 
@@ -1298,27 +1802,37 @@ async def send_control_panel(
             )
 
             await message.edit(
-                embed=build_panel_embed(channel),
-                view=TempVoiceView(channel)
+                embed=build_panel_embed(
+                    channel
+                ),
+                view=TempVoiceView(
+                    channel
+                )
             )
 
             return
 
         except discord.NotFound:
+
             data["panel_message_id"] = None
 
         except discord.HTTPException:
+
             pass
 
     # -----------------------------------------------------
-    # Create new panel.
+    # Create new panel
     # -----------------------------------------------------
 
     try:
 
         message = await channel.send(
-            embed=build_panel_embed(channel),
-            view=TempVoiceView(channel)
+            embed=build_panel_embed(
+                channel
+            ),
+            view=TempVoiceView(
+                channel
+            )
         )
 
         data["panel_message_id"] = message.id
@@ -1326,8 +1840,8 @@ async def send_control_panel(
         save_data()
 
         print(
-            f"✅ TempVoice panel created in "
-            f"{channel.name}"
+            f"✅ TempVoice panel created "
+            f"in {channel.name}"
         )
 
     except discord.Forbidden:
@@ -1374,6 +1888,7 @@ async def delete_temporary_channel(
         )
 
     except discord.NotFound:
+
         pass
 
     except discord.Forbidden:
@@ -1420,7 +1935,8 @@ async def create_temporary_channel(
     if category is None:
 
         raise RuntimeError(
-            "The configured voice category no longer exists."
+            "The configured voice category "
+            "no longer exists."
         )
 
     template = config.get(
@@ -1510,6 +2026,7 @@ async def create_temporary_channel(
         )
 
     except discord.HTTPException:
+
         pass
 
     return channel
@@ -1612,9 +2129,9 @@ async def on_voice_state_update(
                         config
                     )
 
-                    # Give Discord a moment to finish creating
-                    # the text-chat portion of the voice channel.
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(
+                        0.5
+                    )
 
                     await send_control_panel(
                         channel
@@ -1628,37 +2145,58 @@ async def on_voice_state_update(
                     )
 
     # -----------------------------------------------------
-    # EMPTY CHANNEL
+    # UPDATE / DELETE OLD CHANNEL
     # -----------------------------------------------------
 
+    affected_channels = set()
+
     if before.channel is not None:
+        affected_channels.add(
+            before.channel.id
+        )
 
-        channel = before.channel
+    if after.channel is not None:
+        affected_channels.add(
+            after.channel.id
+        )
 
-        if channel.id in temporary_channels:
+    for channel_id in affected_channels:
 
-            if len(channel.members) == 0:
+        if channel_id not in temporary_channels:
+            continue
 
-                await delete_temporary_channel(
-                    channel,
-                    "Temporary voice channel became empty."
-                )
+        channel = member.guild.get_channel(
+            channel_id
+        )
 
-            else:
+        if not isinstance(
+            channel,
+            discord.VoiceChannel
+        ):
+            continue
 
-                data = temporary_channels.get(
-                    channel.id
-                )
+        # -------------------------------------------------
+        # Delete empty temporary channels
+        # -------------------------------------------------
 
-                if data:
+        if len(channel.members) == 0:
 
-                    # Owner left.
-                    # Channel stays alive and can be claimed.
-                    if data["owner_id"] == member.id:
+            await delete_temporary_channel(
+                channel,
+                "Temporary voice channel became empty."
+            )
 
-                        await update_control_panel(
-                            channel
-                        )
+            continue
+
+        # -------------------------------------------------
+        # Update panel whenever membership changes.
+        # This keeps the member count and Claim button
+        # current.
+        # -------------------------------------------------
+
+        await update_control_panel(
+            channel
+        )
 
 
 # =========================================================
@@ -1715,7 +2253,8 @@ class RenameVoiceModal(
         except discord.Forbidden:
 
             await interaction.response.send_message(
-                "❌ I don't have permission to rename this channel.",
+                "❌ I don't have permission "
+                "to rename this channel.",
                 ephemeral=True
             )
 
@@ -2107,6 +2646,10 @@ async def claim_channel(
                 CLAIM_DELAY
             )
 
+            # -------------------------------------------------
+            # Claimant must still be inside.
+            # -------------------------------------------------
+
             if not interaction.user.voice:
                 return
 
@@ -2120,10 +2663,43 @@ async def claim_channel(
             if not current_data:
                 return
 
+            # -------------------------------------------------
+            # Original owner must still be absent.
+            # -------------------------------------------------
+
+            current_owner = channel.guild.get_member(
+                current_data["owner_id"]
+            )
+
+            if (
+                current_owner
+                and current_owner.voice
+                and current_owner.voice.channel == channel
+            ):
+
+                try:
+
+                    await interaction.followup.send(
+                        "❌ The original owner returned, "
+                        "so the claim was cancelled.",
+                        ephemeral=True
+                    )
+
+                except discord.HTTPException:
+                    pass
+
+                await update_control_panel(
+                    channel
+                )
+
+                return
+
             current_data["owner_id"] = (
                 interaction.user.id
             )
 
+            # A successful ownership transfer invalidates
+            # any other pending claim.
             save_data()
 
             await apply_channel_permissions(
@@ -2137,7 +2713,8 @@ async def claim_channel(
             try:
 
                 await interaction.followup.send(
-                    "👑 You now own this temporary voice channel.",
+                    "👑 You now own this temporary "
+                    "voice channel.",
                     ephemeral=True
                 )
 
@@ -2145,7 +2722,22 @@ async def claim_channel(
                 pass
 
         except asyncio.CancelledError:
+
             pass
+
+        finally:
+
+            current_task = asyncio.current_task()
+
+            if (
+                claim_tasks.get(channel.id)
+                is current_task
+            ):
+
+                claim_tasks.pop(
+                    channel.id,
+                    None
+                )
 
     cancel_claim_task(
         channel.id
@@ -2228,9 +2820,6 @@ class TransferView(
 
             return
 
-        # The selected person must actually be in
-        # the temporary channel being transferred.
-
         if member.voice.channel != self.channel:
 
             await interaction.response.send_message(
@@ -2252,6 +2841,10 @@ class TransferView(
             )
 
             return
+
+        cancel_claim_task(
+            self.channel.id
+        )
 
         data["owner_id"] = member.id
 
@@ -2281,8 +2874,12 @@ class TransferView(
     description="Set up the TempVoice system."
 )
 @app_commands.describe(
-    create_channel="Voice channel users join to create a room",
-    category="Category where temporary rooms will be created"
+    create_channel=(
+        "Voice channel users join to create a room"
+    ),
+    category=(
+        "Category where temporary rooms will be created"
+    )
 )
 @app_commands.checks.has_permissions(
     manage_channels=True
@@ -2343,7 +2940,9 @@ async def tempvoice_panel(
 
     if (
         channel
-        and get_temporary_channel(channel.id)
+        and get_temporary_channel(
+            channel.id
+        )
     ):
 
         await update_control_panel(
@@ -2351,7 +2950,8 @@ async def tempvoice_panel(
         )
 
         await interaction.response.send_message(
-            "✅ The TempVoice panel has been refreshed in your voice channel.",
+            "✅ The TempVoice panel has been refreshed "
+            "in your voice channel.",
             ephemeral=True
         )
 
@@ -2480,6 +3080,10 @@ async def cleanup_channels():
 
         if channel is None:
 
+            cancel_claim_task(
+                channel_id
+            )
+
             temporary_channels.pop(
                 channel_id,
                 None
@@ -2493,6 +3097,10 @@ async def cleanup_channels():
             channel,
             discord.VoiceChannel
         ):
+
+            cancel_claim_task(
+                channel_id
+            )
 
             temporary_channels.pop(
                 channel_id,
@@ -2513,6 +3121,7 @@ async def cleanup_channels():
             changed = True
 
     if changed:
+
         save_data()
 
 
@@ -2564,6 +3173,7 @@ async def on_app_command_error(
             )
 
     except discord.HTTPException:
+
         pass
 
 
@@ -2574,7 +3184,17 @@ async def on_app_command_error(
 @bot.event
 async def on_ready():
 
-    load_data()
+    global data_loaded
+
+    # -----------------------------------------------------
+    # Load persistent data only once.
+    # -----------------------------------------------------
+
+    if not data_loaded:
+
+        load_data()
+
+        data_loaded = True
 
     # -----------------------------------------------------
     # Register persistent fallback callbacks.
@@ -2598,6 +3218,29 @@ async def on_ready():
     if not cleanup_channels.is_running():
 
         cleanup_channels.start()
+
+    # -----------------------------------------------------
+    # Status rotation
+    # -----------------------------------------------------
+
+    status_task = getattr(
+        bot,
+        "status_rotation_task",
+        None
+    )
+
+    if (
+        status_task is None
+        or status_task.done()
+    ):
+
+        bot.status_rotation_task = asyncio.create_task(
+            status_rotation_loop()
+        )
+
+    # -----------------------------------------------------
+    # Slash commands
+    # -----------------------------------------------------
 
     try:
 
@@ -2654,7 +3297,6 @@ async def on_ready():
         print(
             f"❌ Failed to sync commands: {repr(e)}"
         )
-
 
 # =========================================================
 # START
