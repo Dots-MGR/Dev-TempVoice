@@ -11,7 +11,7 @@
     "1556027232818827294": {
       "owner_id": 837680779072110593,
       "guild_id": 1513957760730009660,
-      "locked": false,
+      "locked": true,
       "hidden": false,
       "allowed_users": [],
       "denied_users": [],
