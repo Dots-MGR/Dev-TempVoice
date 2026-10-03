@@ -19,28 +19,27 @@
       "text": "Dev0630's bot manager system"
     },
     {
-      "type": "playing",
+      "type": "watching",
       "text": "Managing temporary voice channels"
     },
     {
-      "type": "watching",
+      "type": "playing",
       "text": "Creating voice rooms"
     },
     {
-      "type": "listening",
+      "type": "watching",
       "text": "Self-hosted TempVoice"
     },
     {
-      "type": "competing",
+      "type": "playing",
       "text": "Managing voice channels"
     },
     {
       "type": "watching",
       "text": "Watching TempVoice panels"
     }
-  ],
-  "status_interval": 15
-}
+  ]
+}  
   "owner_id": null,
   "tags": [],
   "description": ""
