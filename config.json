@@ -1,11 +1,46 @@
 {
   "commands": {},
+{
   "status_messages": [
-    {"type": "playing", "text": "Making everything safe"},
-    {"type": "watching", "text": "The advertised server: discord.gg/ThbEwc9YmF"},
-    {"type": "listening", "text": "How to be the best Discord Bot"},
-    {"type": "competing", "text": "Dev0630's bot manager system"}
+    {
+      "type": "playing",
+      "text": "Making everything safe"
+    },
+    {
+      "type": "watching",
+      "text": "The advertised server: discord.gg/ThbEwc9YmF"
+    },
+    {
+      "type": "listening",
+      "text": "How to be the best Discord Bot"
+    },
+    {
+      "type": "competing",
+      "text": "Dev0630's bot manager system"
+    },
+    {
+      "type": "playing",
+      "text": "Managing temporary voice channels"
+    },
+    {
+      "type": "watching",
+      "text": "Creating voice rooms"
+    },
+    {
+      "type": "listening",
+      "text": "Self-hosted TempVoice"
+    },
+    {
+      "type": "competing",
+      "text": "Managing voice channels"
+    },
+    {
+      "type": "watching",
+      "text": "Watching TempVoice panels"
+    }
   ],
+  "status_interval": 15
+}
   "owner_id": null,
   "tags": [],
   "description": ""
