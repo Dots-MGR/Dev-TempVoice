@@ -1,6 +1,10 @@
 import os
 import json
 import asyncio
+import base64
+import urllib.request
+import urllib.error
+import urllib.parse
 from typing import Optional
 
 import discord
@@ -14,11 +18,35 @@ from discord import app_commands
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Railway Volume should be mounted at /app/data
-DATA_DIR = "/app/data"
-DATA_FILE = os.path.join(DATA_DIR, "voice_data.json")
+# ---------------------------------------------------------
+# GitHub persistence
+# ---------------------------------------------------------
 
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = os.getenv("GITHUB_REPO")
+GITHUB_VOICE_DATA_PATH = os.getenv(
+    "GITHUB_VOICE_DATA_PATH",
+    "voice_data.json"
+)
+GITHUB_BRANCH = os.getenv(
+    "GITHUB_BRANCH",
+    "main"
+)
+
+# ---------------------------------------------------------
+# Local fallback/cache
+# ---------------------------------------------------------
+
+DATA_DIR = "/app/data"
+DATA_FILE = os.path.join(
+    DATA_DIR,
+    "voice_data.json"
+)
+
+# ---------------------------------------------------------
 # Static bot configuration
+# ---------------------------------------------------------
+
 CONFIG_FILE = "config.json"
 
 MAX_CHANNEL_NAME_LENGTH = 100
@@ -30,6 +58,7 @@ CLAIM_DELAY = 10
 # =========================================================
 
 intents = discord.Intents.default()
+
 intents.guilds = True
 intents.members = True
 intents.voice_states = True
@@ -65,9 +94,323 @@ claim_tasks = {}
 # Prevent repeatedly loading data on Discord reconnects
 data_loaded = False
 
+# Current GitHub file SHA.
+# Required when updating an existing GitHub file.
+github_file_sha = None
+
+# Prevent simultaneous GitHub writes.
+github_save_lock = asyncio.Lock()
+
 
 # =========================================================
-# PERSISTENCE
+# GITHUB HELPERS
+# =========================================================
+
+def github_enabled():
+    """
+    Returns True when GitHub persistence is configured.
+    """
+
+    return bool(
+        GITHUB_TOKEN
+        and GITHUB_REPO
+        and GITHUB_VOICE_DATA_PATH
+    )
+
+
+def github_api_url():
+    """
+    Build the GitHub Contents API URL.
+    """
+
+    encoded_path = urllib.parse.quote(
+        GITHUB_VOICE_DATA_PATH,
+        safe="/"
+    )
+
+    return (
+        "https://api.github.com/repos/"
+        f"{GITHUB_REPO}/contents/{encoded_path}"
+    )
+
+
+def github_request(
+    method: str,
+    url: str,
+    body=None
+):
+    """
+    Perform a GitHub API request using urllib.
+
+    Uses only Python's standard library, so no additional
+    package is required.
+    """
+
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "TempVoice-Bot"
+    }
+
+    data = None
+
+    if body is not None:
+
+        data = json.dumps(
+            body
+        ).encode("utf-8")
+
+        headers["Content-Type"] = (
+            "application/json"
+        )
+
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers=headers,
+        method=method
+    )
+
+    try:
+
+        with urllib.request.urlopen(
+            request,
+            timeout=20
+        ) as response:
+
+            response_data = response.read()
+
+            if not response_data:
+                return {}
+
+            return json.loads(
+                response_data.decode("utf-8")
+            )
+
+    except urllib.error.HTTPError as e:
+
+        error_body = ""
+
+        try:
+            error_body = e.read().decode(
+                "utf-8",
+                errors="replace"
+            )
+        except Exception:
+            pass
+
+        raise RuntimeError(
+            f"GitHub API HTTP {e.code}: {error_body}"
+        )
+
+    except urllib.error.URLError as e:
+
+        raise RuntimeError(
+            f"GitHub API connection failed: {e}"
+        )
+
+
+def github_load_voice_data():
+    """
+    Download voice_data.json from GitHub.
+
+    Returns:
+        dict or None
+    """
+
+    global github_file_sha
+
+    if not github_enabled():
+
+        print(
+            "⚠️ GitHub persistence is not configured."
+        )
+
+        return None
+
+    try:
+
+        response = github_request(
+            "GET",
+            github_api_url()
+        )
+
+        content = response.get(
+            "content"
+        )
+
+        if not content:
+
+            print(
+                "⚠️ GitHub voice_data.json has no content."
+            )
+
+            return None
+
+        github_file_sha = response.get(
+            "sha"
+        )
+
+        decoded = base64.b64decode(
+            content.replace("\n", "")
+        ).decode(
+            "utf-8"
+        )
+
+        data = json.loads(
+            decoded
+        )
+
+        print(
+            "☁️ voice_data.json loaded from GitHub."
+        )
+
+        return data
+
+    except RuntimeError as e:
+
+        print(
+            f"❌ Failed to load voice_data.json "
+            f"from GitHub: {e}"
+        )
+
+    except json.JSONDecodeError as e:
+
+        print(
+            f"❌ GitHub voice_data.json contains "
+            f"invalid JSON: {e}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Unexpected GitHub load error: "
+            f"{repr(e)}"
+        )
+
+    return None
+
+
+def github_save_voice_data_sync(
+    data: dict
+):
+    """
+    Save voice_data.json to GitHub.
+
+    This function performs the actual synchronous HTTP
+    operation. save_data() runs it in a background thread.
+    """
+
+    global github_file_sha
+
+    if not github_enabled():
+
+        return False
+
+    try:
+
+        # -------------------------------------------------
+        # Get the newest SHA.
+        #
+        # This prevents an old SHA from causing an
+        # unnecessary conflict if the file changed remotely.
+        # -------------------------------------------------
+
+        try:
+
+            current = github_request(
+                "GET",
+                github_api_url()
+            )
+
+            current_sha = current.get(
+                "sha"
+            )
+
+            if current_sha:
+
+                github_file_sha = current_sha
+
+        except Exception as e:
+
+            print(
+                f"⚠️ Could not refresh GitHub file SHA: "
+                f"{e}"
+            )
+
+        # -------------------------------------------------
+        # Convert JSON to base64.
+        # -------------------------------------------------
+
+        json_text = json.dumps(
+            data,
+            indent=2,
+            ensure_ascii=False
+        )
+
+        encoded_content = base64.b64encode(
+            json_text.encode("utf-8")
+        ).decode("ascii")
+
+        body = {
+            "message": (
+                "Update TempVoice voice_data.json"
+            ),
+            "content": encoded_content,
+            "branch": GITHUB_BRANCH
+        }
+
+        if github_file_sha:
+
+            body["sha"] = github_file_sha
+
+        # -------------------------------------------------
+        # Upload.
+        # -------------------------------------------------
+
+        response = github_request(
+            "PUT",
+            github_api_url(),
+            body
+        )
+
+        new_sha = response.get(
+            "content",
+            {}
+        ).get(
+            "sha"
+        )
+
+        if new_sha:
+
+            github_file_sha = new_sha
+
+        print(
+            "☁️ voice_data.json saved to GitHub."
+        )
+
+        return True
+
+    except RuntimeError as e:
+
+        print(
+            f"❌ Failed to save voice_data.json "
+            f"to GitHub: {e}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Unexpected GitHub save error: "
+            f"{repr(e)}"
+        )
+
+    return False
+
+
+# =========================================================
+# LOCAL STORAGE
 # =========================================================
 
 def ensure_data_storage():
@@ -79,7 +422,9 @@ def ensure_data_storage():
             exist_ok=True
         )
 
-        if not os.path.exists(DATA_FILE):
+        if not os.path.exists(
+            DATA_FILE
+        ):
 
             with open(
                 DATA_FILE,
@@ -99,110 +444,14 @@ def ensure_data_storage():
     except Exception as e:
 
         print(
-            f"❌ Failed to initialize data storage: {e}"
+            f"❌ Failed to initialize local "
+            f"data storage: {e}"
         )
 
 
-def load_data():
-
-    global server_configs
-    global temporary_channels
-
-    ensure_data_storage()
-
-    try:
-
-        with open(
-            DATA_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
-            data = json.load(f)
-
-        server_configs = data.get(
-            "servers",
-            {}
-        )
-
-        saved_channels = data.get(
-            "temporary_channels",
-            {}
-        )
-
-        temporary_channels = {
-            int(channel_id): channel_data
-            for channel_id, channel_data
-            in saved_channels.items()
-        }
-
-        # -------------------------------------------------
-        # Upgrade older saved channels
-        # -------------------------------------------------
-
-        for channel_id, channel_data in temporary_channels.items():
-
-            channel_data.setdefault(
-                "panel_message_id",
-                None
-            )
-
-            channel_data.setdefault(
-                "locked",
-                False
-            )
-
-            channel_data.setdefault(
-                "hidden",
-                False
-            )
-
-            channel_data.setdefault(
-                "allowed_users",
-                []
-            )
-
-            channel_data.setdefault(
-                "denied_users",
-                []
-            )
-
-            channel_data.setdefault(
-                "moderators",
-                []
-            )
-
-        print(
-            "✅ Voice configuration loaded."
-        )
-
-    except FileNotFoundError:
-
-        server_configs = {}
-        temporary_channels = {}
-
-        save_data()
-
-    except json.JSONDecodeError as e:
-
-        print(
-            f"❌ Invalid JSON in {DATA_FILE}: {e}"
-        )
-
-        server_configs = {}
-        temporary_channels = {}
-
-    except Exception as e:
-
-        print(
-            f"❌ Failed to load voice configuration: {e}"
-        )
-
-        server_configs = {}
-        temporary_channels = {}
-
-
-def save_data():
+def save_local_cache(
+    data: dict
+):
 
     try:
 
@@ -215,23 +464,239 @@ def save_data():
         ) as f:
 
             json.dump(
-                {
-                    "servers": server_configs,
-                    "temporary_channels": {
-                        str(channel_id): data
-                        for channel_id, data
-                        in temporary_channels.items()
-                    }
-                },
+                data,
                 f,
-                indent=2
+                indent=2,
+                ensure_ascii=False
             )
 
     except Exception as e:
 
         print(
-            f"❌ Failed to save voice data: {e}"
+            f"⚠️ Failed to save local voice "
+            f"data cache: {e}"
         )
+
+
+def build_voice_data():
+
+    return {
+        "servers": server_configs,
+
+        "temporary_channels": {
+            str(channel_id): data
+            for channel_id, data
+            in temporary_channels.items()
+        }
+    }
+
+
+# =========================================================
+# LOAD DATA
+# =========================================================
+
+def load_data():
+
+    global server_configs
+    global temporary_channels
+
+    data = None
+
+    # -----------------------------------------------------
+    # GitHub is the primary source.
+    # -----------------------------------------------------
+
+    if github_enabled():
+
+        data = github_load_voice_data()
+
+    # -----------------------------------------------------
+    # Local cache is the fallback.
+    # -----------------------------------------------------
+
+    if data is None:
+
+        ensure_data_storage()
+
+        try:
+
+            with open(
+                DATA_FILE,
+                "r",
+                encoding="utf-8"
+            ) as f:
+
+                data = json.load(
+                    f
+                )
+
+            print(
+                "💾 Voice configuration loaded "
+                "from local cache."
+            )
+
+        except FileNotFoundError:
+
+            data = {
+                "servers": {},
+                "temporary_channels": {}
+            }
+
+        except json.JSONDecodeError as e:
+
+            print(
+                f"❌ Invalid JSON in local "
+                f"{DATA_FILE}: {e}"
+            )
+
+            data = {
+                "servers": {},
+                "temporary_channels": {}
+            }
+
+        except Exception as e:
+
+            print(
+                f"❌ Failed to load local "
+                f"voice configuration: {e}"
+            )
+
+            data = {
+                "servers": {},
+                "temporary_channels": {}
+            }
+
+    # -----------------------------------------------------
+    # Load server configurations.
+    # -----------------------------------------------------
+
+    server_configs = data.get(
+        "servers",
+        {}
+    )
+
+    saved_channels = data.get(
+        "temporary_channels",
+        {}
+    )
+
+    temporary_channels = {
+        int(channel_id): channel_data
+        for channel_id, channel_data
+        in saved_channels.items()
+    }
+
+    # -----------------------------------------------------
+    # Upgrade older saved channels.
+    # -----------------------------------------------------
+
+    for channel_id, channel_data in (
+        temporary_channels.items()
+    ):
+
+        channel_data.setdefault(
+            "panel_message_id",
+            None
+        )
+
+        channel_data.setdefault(
+            "locked",
+            False
+        )
+
+        channel_data.setdefault(
+            "hidden",
+            False
+        )
+
+        channel_data.setdefault(
+            "allowed_users",
+            []
+        )
+
+        channel_data.setdefault(
+            "denied_users",
+            []
+        )
+
+        channel_data.setdefault(
+            "moderators",
+            []
+        )
+
+    # -----------------------------------------------------
+    # Save the normalized version locally.
+    # -----------------------------------------------------
+
+    save_local_cache(
+        build_voice_data()
+    )
+
+    print(
+        "✅ Voice configuration loaded."
+    )
+
+    print(
+        f"🏠 Configured servers: "
+        f"{len(server_configs)}"
+    )
+
+
+# =========================================================
+# SAVE DATA
+# =========================================================
+
+def save_data():
+
+    data = build_voice_data()
+
+    # -----------------------------------------------------
+    # Always update local cache.
+    # -----------------------------------------------------
+
+    save_local_cache(
+        data
+    )
+
+    # -----------------------------------------------------
+    # GitHub persistence.
+    #
+    # Run the blocking HTTP request in a background thread
+    # so Discord's event loop isn't blocked.
+    # -----------------------------------------------------
+
+    if github_enabled():
+
+        async def github_save():
+
+            async with github_save_lock:
+
+                try:
+
+                    await asyncio.to_thread(
+                        github_save_voice_data_sync,
+                        data
+                    )
+
+                except Exception as e:
+
+                    print(
+                        f"❌ GitHub save task failed: "
+                        f"{repr(e)}"
+                    )
+
+        try:
+
+            asyncio.get_running_loop().create_task(
+                github_save()
+            )
+
+        except RuntimeError:
+
+            print(
+                "⚠️ No running event loop; "
+                "GitHub save skipped."
+            )
 
 
 # =========================================================
@@ -248,7 +713,9 @@ def load_status_config():
             encoding="utf-8"
         ) as f:
 
-            config = json.load(f)
+            config = json.load(
+                f
+            )
 
         messages = config.get(
             "status_messages",
@@ -290,6 +757,7 @@ def load_status_config():
             )
 
             if not status_type or not text:
+
                 continue
 
             status_type = str(
@@ -327,8 +795,8 @@ def load_status_config():
                 interval
             )
 
-            # Don't spam Discord with presence changes
             if interval < 5:
+
                 interval = 5
 
         except (
@@ -363,7 +831,8 @@ def load_status_config():
     except Exception as e:
 
         print(
-            f"❌ Failed to load status configuration: {e}"
+            f"❌ Failed to load status configuration: "
+            f"{e}"
         )
 
         return [], 15
@@ -485,6 +954,7 @@ def get_member_channel(
 ) -> Optional[discord.VoiceChannel]:
 
     if interaction.user.voice is None:
+
         return None
 
     channel = interaction.user.voice.channel
@@ -493,6 +963,7 @@ def get_member_channel(
         channel,
         discord.VoiceChannel
     ):
+
         return None
 
     return channel
@@ -508,6 +979,7 @@ def is_channel_owner(
     )
 
     if not data:
+
         return False
 
     return (
@@ -526,6 +998,7 @@ def is_channel_manager(
     )
 
     if not data:
+
         return False
 
     if data.get(
@@ -553,6 +1026,7 @@ def is_allowed_user(
     )
 
     if not data:
+
         return False
 
     return (
@@ -574,6 +1048,7 @@ def is_denied_user(
     )
 
     if not data:
+
         return False
 
     return (
@@ -590,10 +1065,26 @@ def format_voice_name(
     member: discord.Member
 ):
 
-    return template.replace(
+    name = template
+
+    name = name.replace(
         "{user}",
         member.display_name
-    )[:MAX_CHANNEL_NAME_LENGTH]
+    )
+
+    name = name.replace(
+        "{username}",
+        member.name
+    )
+
+    name = name.replace(
+        "{server}",
+        member.guild.name
+    )
+
+    return name[
+        :MAX_CHANNEL_NAME_LENGTH
+    ]
 
 
 def cancel_claim_task(
@@ -623,6 +1114,7 @@ async def apply_channel_permissions(
     )
 
     if not data:
+
         return
 
     guild = channel.guild
@@ -650,10 +1142,6 @@ async def apply_channel_permissions(
         reason="TempVoice permission update"
     )
 
-    # -----------------------------------------------------
-    # OWNER
-    # -----------------------------------------------------
-
     owner = guild.get_member(
         data["owner_id"]
     )
@@ -667,10 +1155,6 @@ async def apply_channel_permissions(
             speak=True,
             reason="TempVoice owner permissions"
         )
-
-    # -----------------------------------------------------
-    # MODERATORS
-    # -----------------------------------------------------
 
     for user_id in data.get(
         "moderators",
@@ -691,10 +1175,6 @@ async def apply_channel_permissions(
                 reason="TempVoice moderator permissions"
             )
 
-    # -----------------------------------------------------
-    # ALLOWED USERS
-    # -----------------------------------------------------
-
     for user_id in data.get(
         "allowed_users",
         []
@@ -712,10 +1192,6 @@ async def apply_channel_permissions(
                 view_channel=True,
                 reason="TempVoice allowed user"
             )
-
-    # -----------------------------------------------------
-    # DENIED USERS
-    # -----------------------------------------------------
 
     for user_id in data.get(
         "denied_users",
@@ -757,6 +1233,7 @@ def build_panel_embed(
         )
 
         if owner:
+
             owner_text = owner.mention
 
     locked = False
@@ -829,10 +1306,6 @@ def build_panel_embed(
         inline=True
     )
 
-    # -----------------------------------------------------
-    # Claim is only useful when the owner is absent.
-    # -----------------------------------------------------
-
     claim_available = True
 
     if data:
@@ -849,19 +1322,13 @@ def build_panel_embed(
 
             claim_available = False
 
-    ownership_text = (
-        "👑 Transfer\n"
-    )
+    ownership_text = "👑 Transfer\n"
 
     if claim_available:
 
-        ownership_text += (
-            "🙋 Claim\n"
-        )
+        ownership_text += "🙋 Claim\n"
 
-    ownership_text += (
-        "🗑️ Delete"
-    )
+    ownership_text += "🗑️ Delete"
 
     embed.add_field(
         name="Ownership",
@@ -892,10 +1359,6 @@ class TempVoiceView(
         super().__init__(
             timeout=None
         )
-
-        # -------------------------------------------------
-        # Persistent fallback view
-        # -------------------------------------------------
 
         if channel is None:
 
@@ -1031,15 +1494,12 @@ class TempVoiceView(
 
             return
 
-        # -------------------------------------------------
-        # Dynamic channel view
-        # -------------------------------------------------
-
         data = get_temporary_channel(
             channel.id
         )
 
         if not data:
+
             return
 
         locked = data.get(
@@ -1051,10 +1511,6 @@ class TempVoiceView(
             "hidden",
             False
         )
-
-        # -------------------------------------------------
-        # BASIC
-        # -------------------------------------------------
 
         self.add_item(
             self.make_button(
@@ -1075,10 +1531,6 @@ class TempVoiceView(
                 self.limit_button
             )
         )
-
-        # -------------------------------------------------
-        # LOCK / UNLOCK
-        # -------------------------------------------------
 
         if locked:
 
@@ -1104,10 +1556,6 @@ class TempVoiceView(
                 )
             )
 
-        # -------------------------------------------------
-        # HIDE / SHOW
-        # -------------------------------------------------
-
         if hidden:
 
             self.add_item(
@@ -1131,10 +1579,6 @@ class TempVoiceView(
                     self.hide_button
                 )
             )
-
-        # -------------------------------------------------
-        # MEMBERS
-        # -------------------------------------------------
 
         self.add_item(
             self.make_button(
@@ -1175,10 +1619,6 @@ class TempVoiceView(
                 self.moderator_button
             )
         )
-
-        # -------------------------------------------------
-        # OWNERSHIP
-        # -------------------------------------------------
 
         self.add_item(
             self.make_button(
@@ -1222,10 +1662,6 @@ class TempVoiceView(
             )
         )
 
-    # =====================================================
-    # BUTTON FACTORY
-    # =====================================================
-
     def make_button(
         self,
         label,
@@ -1246,13 +1682,9 @@ class TempVoiceView(
 
         return button
 
-    # =====================================================
-    # RENAME
-    # =====================================================
-
     async def rename_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await self.check_owner(
@@ -1265,13 +1697,9 @@ class TempVoiceView(
                 RenameVoiceModal(channel)
             )
 
-    # =====================================================
-    # LIMIT
-    # =====================================================
-
     async def limit_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await self.check_owner(
@@ -1284,13 +1712,9 @@ class TempVoiceView(
                 LimitVoiceModal(channel)
             )
 
-    # =====================================================
-    # LOCK
-    # =====================================================
-
     async def lock_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await self.check_owner(
@@ -1330,13 +1754,9 @@ class TempVoiceView(
             ephemeral=True
         )
 
-    # =====================================================
-    # UNLOCK
-    # =====================================================
-
     async def unlock_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await self.check_owner(
@@ -1376,13 +1796,9 @@ class TempVoiceView(
             ephemeral=True
         )
 
-    # =====================================================
-    # HIDE
-    # =====================================================
-
     async def hide_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await self.check_owner(
@@ -1422,13 +1838,9 @@ class TempVoiceView(
             ephemeral=True
         )
 
-    # =====================================================
-    # SHOW
-    # =====================================================
-
     async def show_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await self.check_owner(
@@ -1468,13 +1880,9 @@ class TempVoiceView(
             ephemeral=True
         )
 
-    # =====================================================
-    # ALLOW
-    # =====================================================
-
     async def allow_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await self.check_owner(
@@ -1492,13 +1900,9 @@ class TempVoiceView(
                 ephemeral=True
             )
 
-    # =====================================================
-    # DENY
-    # =====================================================
-
     async def deny_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await self.check_owner(
@@ -1516,13 +1920,9 @@ class TempVoiceView(
                 ephemeral=True
             )
 
-    # =====================================================
-    # KICK
-    # =====================================================
-
     async def kick_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await self.check_owner(
@@ -1540,13 +1940,9 @@ class TempVoiceView(
                 ephemeral=True
             )
 
-    # =====================================================
-    # MODERATOR
-    # =====================================================
-
     async def moderator_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await require_managed_channel(
@@ -1577,13 +1973,9 @@ class TempVoiceView(
             ephemeral=True
         )
 
-    # =====================================================
-    # TRANSFER
-    # =====================================================
-
     async def transfer_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await require_managed_channel(
@@ -1611,13 +2003,9 @@ class TempVoiceView(
             ephemeral=True
         )
 
-    # =====================================================
-    # CLAIM
-    # =====================================================
-
     async def claim_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await require_managed_channel(
@@ -1631,13 +2019,9 @@ class TempVoiceView(
                 channel
             )
 
-    # =====================================================
-    # DELETE
-    # =====================================================
-
     async def delete_button(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await require_managed_channel(
@@ -1669,13 +2053,9 @@ class TempVoiceView(
             "Deleted by temporary channel owner."
         )
 
-    # =====================================================
-    # PERMISSION CHECK
-    # =====================================================
-
     async def check_owner(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         channel = await require_managed_channel(
@@ -1787,10 +2167,6 @@ async def send_control_panel(
     if not data:
         return
 
-    # -----------------------------------------------------
-    # Reuse existing panel
-    # -----------------------------------------------------
-
     if data.get(
         "panel_message_id"
     ):
@@ -1819,10 +2195,6 @@ async def send_control_panel(
         except discord.HTTPException:
 
             pass
-
-    # -----------------------------------------------------
-    # Create new panel
-    # -----------------------------------------------------
 
     try:
 
@@ -1939,6 +2311,10 @@ async def create_temporary_channel(
             "no longer exists."
         )
 
+    # -----------------------------------------------------
+    # DEFAULT CHANNEL NAME
+    # -----------------------------------------------------
+
     template = config.get(
         "default_name",
         "{user}'s Room"
@@ -1948,6 +2324,10 @@ async def create_temporary_channel(
         template,
         member
     )
+
+    # -----------------------------------------------------
+    # DEFAULT USER LIMIT
+    # -----------------------------------------------------
 
     user_limit = config.get(
         "default_limit",
@@ -2151,11 +2531,13 @@ async def on_voice_state_update(
     affected_channels = set()
 
     if before.channel is not None:
+
         affected_channels.add(
             before.channel.id
         )
 
     if after.channel is not None:
+
         affected_channels.add(
             after.channel.id
         )
@@ -2163,6 +2545,7 @@ async def on_voice_state_update(
     for channel_id in affected_channels:
 
         if channel_id not in temporary_channels:
+
             continue
 
         channel = member.guild.get_channel(
@@ -2173,11 +2556,8 @@ async def on_voice_state_update(
             channel,
             discord.VoiceChannel
         ):
-            continue
 
-        # -------------------------------------------------
-        # Delete empty temporary channels
-        # -------------------------------------------------
+            continue
 
         if len(channel.members) == 0:
 
@@ -2187,12 +2567,6 @@ async def on_voice_state_update(
             )
 
             continue
-
-        # -------------------------------------------------
-        # Update panel whenever membership changes.
-        # This keeps the member count and Claim button
-        # current.
-        # -------------------------------------------------
 
         await update_control_panel(
             channel
@@ -2230,7 +2604,7 @@ class RenameVoiceModal(
 
     async def on_submit(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         try:
@@ -2297,7 +2671,7 @@ class LimitVoiceModal(
 
     async def on_submit(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         try:
@@ -2307,6 +2681,7 @@ class LimitVoiceModal(
             )
 
             if limit < 0 or limit > 99:
+
                 raise ValueError
 
         except ValueError:
@@ -2384,7 +2759,7 @@ class MemberActionView(
 
     async def member_selected(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         member = self.member_select.values[0]
@@ -2423,10 +2798,6 @@ class MemberActionView(
 
             return
 
-        # -------------------------------------------------
-        # ALLOW
-        # -------------------------------------------------
-
         if self.action == "allow":
 
             if member.id not in data["allowed_users"]:
@@ -2451,10 +2822,6 @@ class MemberActionView(
             message = (
                 f"➕ Allowed {member.mention}."
             )
-
-        # -------------------------------------------------
-        # DENY
-        # -------------------------------------------------
 
         elif self.action == "deny":
 
@@ -2490,15 +2857,12 @@ class MemberActionView(
                     )
 
                 except discord.HTTPException:
+
                     pass
 
             message = (
                 f"➖ Denied {member.mention}."
             )
-
-        # -------------------------------------------------
-        # KICK
-        # -------------------------------------------------
 
         elif self.action == "kick":
 
@@ -2530,10 +2894,6 @@ class MemberActionView(
                 message = (
                     "❌ That member isn't in your channel."
                 )
-
-        # -------------------------------------------------
-        # MODERATOR
-        # -------------------------------------------------
 
         elif self.action == "moderator":
 
@@ -2588,8 +2948,8 @@ class MemberActionView(
 # =========================================================
 
 async def claim_channel(
-    interaction: discord.Interaction,
-    channel: discord.VoiceChannel
+    interaction,
+    channel
 ):
 
     data = get_temporary_channel(
@@ -2646,14 +3006,12 @@ async def claim_channel(
                 CLAIM_DELAY
             )
 
-            # -------------------------------------------------
-            # Claimant must still be inside.
-            # -------------------------------------------------
-
             if not interaction.user.voice:
+
                 return
 
             if interaction.user.voice.channel != channel:
+
                 return
 
             current_data = get_temporary_channel(
@@ -2661,11 +3019,8 @@ async def claim_channel(
             )
 
             if not current_data:
-                return
 
-            # -------------------------------------------------
-            # Original owner must still be absent.
-            # -------------------------------------------------
+                return
 
             current_owner = channel.guild.get_member(
                 current_data["owner_id"]
@@ -2686,6 +3041,7 @@ async def claim_channel(
                     )
 
                 except discord.HTTPException:
+
                     pass
 
                 await update_control_panel(
@@ -2698,8 +3054,6 @@ async def claim_channel(
                 interaction.user.id
             )
 
-            # A successful ownership transfer invalidates
-            # any other pending claim.
             save_data()
 
             await apply_channel_permissions(
@@ -2719,6 +3073,7 @@ async def claim_channel(
                 )
 
             except discord.HTTPException:
+
                 pass
 
         except asyncio.CancelledError:
@@ -2760,7 +3115,7 @@ class TransferView(
 
     def __init__(
         self,
-        channel: discord.VoiceChannel
+        channel
     ):
 
         super().__init__(
@@ -2785,7 +3140,7 @@ class TransferView(
 
     async def callback(
         self,
-        interaction: discord.Interaction
+        interaction
     ):
 
         member = self.select.values[0]
@@ -2893,6 +3248,7 @@ async def tempvoice_setup(
     guild = interaction.guild
 
     if guild is None:
+
         return
 
     server_configs[str(guild.id)] = {
@@ -2915,9 +3271,93 @@ async def tempvoice_setup(
     await interaction.response.send_message(
         "✅ **TempVoice has been configured!**\n\n"
         f"🎙️ Create channel: {create_channel.mention}\n"
-        f"📁 Category: **{category.name}**\n\n"
+        f"📁 Category: **{category.name}**\n"
+        "🏷️ Default name: `{user}'s Room`\n\n"
         "Users who join the create channel will automatically "
         "receive their own temporary voice channel.",
+        ephemeral=True
+    )
+
+
+# =========================================================
+# /TEMPVOICE NAME
+# =========================================================
+
+@bot.tree.command(
+    name="tempvoice_name",
+    description="Change the default name of newly created voice channels."
+)
+@app_commands.describe(
+    name=(
+        "Default name template. "
+        "Use {user}, {username}, or {server}."
+    )
+)
+@app_commands.checks.has_permissions(
+    manage_channels=True
+)
+async def tempvoice_name(
+    interaction: discord.Interaction,
+    name: str
+):
+
+    guild = interaction.guild
+
+    if guild is None:
+
+        return
+
+    config = get_config(
+        guild.id
+    )
+
+    if not config:
+
+        await interaction.response.send_message(
+            "❌ TempVoice hasn't been configured yet. "
+            "Run `/tempvoice_setup` first.",
+            ephemeral=True
+        )
+
+        return
+
+    name = name.strip()
+
+    if not name:
+
+        await interaction.response.send_message(
+            "❌ The default channel name cannot be empty.",
+            ephemeral=True
+        )
+
+        return
+
+    if len(name) > MAX_CHANNEL_NAME_LENGTH:
+
+        await interaction.response.send_message(
+            f"❌ The template cannot be longer than "
+            f"{MAX_CHANNEL_NAME_LENGTH} characters.",
+            ephemeral=True
+        )
+
+        return
+
+    config["default_name"] = name
+
+    save_data()
+
+    preview_member = interaction.user
+
+    preview = format_voice_name(
+        name,
+        preview_member
+    )
+
+    await interaction.response.send_message(
+        "✅ **Default TempVoice name updated!**\n\n"
+        f"🏷️ Template: `{name}`\n"
+        f"👀 Preview: **{preview}**\n\n"
+        "This only affects newly created temporary channels.",
         ephemeral=True
     )
 
@@ -2989,6 +3429,10 @@ async def tempvoice_config(
     interaction: discord.Interaction
 ):
 
+    if interaction.guild is None:
+
+        return
+
     config = get_config(
         interaction.guild.id
     )
@@ -3008,6 +3452,16 @@ async def tempvoice_config(
 
     category = interaction.guild.get_channel(
         config.get("category_id")
+    )
+
+    default_name = config.get(
+        "default_name",
+        "{user}'s Room"
+    )
+
+    default_limit = config.get(
+        "default_limit",
+        0
     )
 
     embed = discord.Embed(
@@ -3037,20 +3491,14 @@ async def tempvoice_config(
 
     embed.add_field(
         name="Default Name",
-        value=config.get(
-            "default_name",
-            "{user}'s Room"
-        ),
+        value=default_name,
         inline=False
     )
 
     embed.add_field(
         name="Default Limit",
         value=str(
-            config.get(
-                "default_limit",
-                0
-            )
+            default_limit
         ),
         inline=False
     )
@@ -3187,7 +3635,9 @@ async def on_ready():
     global data_loaded
 
     # -----------------------------------------------------
-    # Load persistent data only once.
+    # Load voice_data.json once.
+    #
+    # GitHub is primary; Railway local cache is fallback.
     # -----------------------------------------------------
 
     if not data_loaded:
@@ -3197,7 +3647,7 @@ async def on_ready():
         data_loaded = True
 
     # -----------------------------------------------------
-    # Register persistent fallback callbacks.
+    # Persistent fallback view
     # -----------------------------------------------------
 
     if not hasattr(
@@ -3234,8 +3684,10 @@ async def on_ready():
         or status_task.done()
     ):
 
-        bot.status_rotation_task = asyncio.create_task(
-            status_rotation_loop()
+        bot.status_rotation_task = (
+            asyncio.create_task(
+                status_rotation_loop()
+            )
         )
 
     # -----------------------------------------------------
@@ -3259,8 +3711,22 @@ async def on_ready():
             f"{len(temporary_channels)} temporary channels"
         )
 
+        if github_enabled():
+
+            print(
+                f"☁️ GitHub persistence enabled: "
+                f"{GITHUB_REPO}/{GITHUB_VOICE_DATA_PATH}"
+            )
+
+        else:
+
+            print(
+                "💾 GitHub persistence disabled; "
+                "using local storage."
+            )
+
         # -------------------------------------------------
-        # Refresh existing panels after startup.
+        # Refresh existing panels
         # -------------------------------------------------
 
         for channel_id in list(
@@ -3297,6 +3763,7 @@ async def on_ready():
         print(
             f"❌ Failed to sync commands: {repr(e)}"
         )
+
 
 # =========================================================
 # START
