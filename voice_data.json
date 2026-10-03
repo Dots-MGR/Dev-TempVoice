@@ -1,1 +1,10 @@
-
+{
+  "servers": {
+    "1513957760730009660": {
+      "create_channel_id": 1555982496166838447,
+      "category_id": 1555980543366266890,
+      "default_name": "{user}'s ^DormRoom",
+      "default_limit": 1
+    }
+  }
+}
