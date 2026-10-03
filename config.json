@@ -1,6 +1,5 @@
 {
   "commands": {},
-{
   "status_messages": [
     {
       "type": "playing",
@@ -39,7 +38,6 @@
       "text": "Watching TempVoice panels"
     }
   ]
-}  
   "owner_id": null,
   "tags": [],
   "description": ""
