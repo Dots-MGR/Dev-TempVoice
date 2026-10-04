@@ -28,7 +28,9 @@
       "waiting_room": {
         "enabled": true,
         "channel_id": 1556249479911317595,
-        "pending_users": []
+        "pending_users": [
+          837680779072110593
+        ]
       },
       "region": null,
       "member_controls": {
