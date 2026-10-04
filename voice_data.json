@@ -13,7 +13,9 @@
       "guild_id": 1513957760730009660,
       "locked": true,
       "hidden": true,
-      "allowed_users": [],
+      "allowed_users": [
+        1135588213726117990
+      ],
       "denied_users": [],
       "moderators": [],
       "panel_message_id": 1556240982205272157
