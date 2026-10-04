@@ -7,5 +7,16 @@
       "default_limit": 0
     }
   },
-  "temporary_channels": {}
+  "temporary_channels": {
+    "1556225079082487879": {
+      "owner_id": 1135588213726117990,
+      "guild_id": 1513957760730009660,
+      "locked": false,
+      "hidden": false,
+      "allowed_users": [],
+      "denied_users": [],
+      "moderators": [],
+      "panel_message_id": null
+    }
+  }
 }
