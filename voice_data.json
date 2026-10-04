@@ -37,7 +37,7 @@
         },
         "1135588213726117990": {
           "speak": true,
-          "stream": false,
+          "stream": true,
           "soundboard": true
         }
       }
