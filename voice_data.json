@@ -19,7 +19,7 @@
       "panel_message_id": 1556246077538181131,
       "chat": {
         "mode": "owner_only",
-        "outside_read": true,
+        "outside_read": false,
         "outside_write": true,
         "locked": false
       },
