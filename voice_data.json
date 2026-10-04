@@ -20,7 +20,7 @@
       "chat": {
         "mode": "owner_only",
         "outside_read": false,
-        "outside_write": false,
+        "outside_write": true,
         "locked": false
       },
       "waiting_room": {
