@@ -20,7 +20,7 @@
       "moderators": [],
       "panel_message_id": 1556248817433841776,
       "chat": {
-        "mode": "everyone",
+        "mode": "owner_only",
         "outside_read": true,
         "outside_write": true,
         "locked": false
