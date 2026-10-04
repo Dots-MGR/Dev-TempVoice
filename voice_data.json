@@ -23,7 +23,7 @@
         "mode": "owner_only",
         "outside_read": false,
         "outside_write": false,
-        "locked": false
+        "locked": true
       },
       "waiting_room": {
         "enabled": false,
