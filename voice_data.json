@@ -8,29 +8,6 @@
     }
   },
   "temporary_channels": {
-    "1558486911910420600": {
-      "owner_id": 1558447197345947702,
-      "guild_id": 1513957760730009660,
-      "locked": false,
-      "hidden": false,
-      "allowed_users": [],
-      "denied_users": [],
-      "moderators": [],
-      "panel_message_id": 1558486918017056836,
-      "chat": {
-        "mode": "everyone",
-        "outside_read": true,
-        "outside_write": true,
-        "locked": false
-      },
-      "waiting_room": {
-        "enabled": false,
-        "channel_id": null,
-        "pending_users": []
-      },
-      "region": null,
-      "member_controls": {}
-    },
     "1558486932365910126": {
       "owner_id": 1558447197345947702,
       "guild_id": 1513957760730009660,
