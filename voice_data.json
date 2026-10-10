@@ -13,7 +13,9 @@
       "guild_id": 1513957760730009660,
       "locked": false,
       "hidden": false,
-      "allowed_users": [],
+      "allowed_users": [
+        1135588213726117990
+      ],
       "denied_users": [],
       "moderators": [],
       "panel_message_id": 1558486938468749507,
@@ -29,7 +31,13 @@
         "pending_users": []
       },
       "region": null,
-      "member_controls": {}
+      "member_controls": {
+        "1558447197345947702": {
+          "speak": true,
+          "stream": true,
+          "soundboard": true
+        }
+      }
     }
   }
 }
