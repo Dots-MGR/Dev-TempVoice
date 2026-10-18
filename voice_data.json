@@ -7,35 +7,5 @@
       "default_limit": 0
     }
   },
-  "temporary_channels": {
-    "1561346193047556107": {
-      "owner_id": 837680779072110593,
-      "guild_id": 1513957760730009660,
-      "locked": true,
-      "hidden": false,
-      "allowed_users": [],
-      "denied_users": [],
-      "moderators": [],
-      "panel_message_id": 1561346200102248503,
-      "chat": {
-        "mode": "owner_only",
-        "outside_read": false,
-        "outside_write": false,
-        "locked": true
-      },
-      "waiting_room": {
-        "enabled": true,
-        "channel_id": 1561349762098274346,
-        "pending_users": []
-      },
-      "region": null,
-      "member_controls": {
-        "837680779072110593": {
-          "speak": true,
-          "stream": true,
-          "soundboard": true
-        }
-      }
-    }
-  }
+  "temporary_channels": {}
 }
