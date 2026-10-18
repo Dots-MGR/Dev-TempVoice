@@ -24,12 +24,18 @@
         "locked": false
       },
       "waiting_room": {
-        "enabled": false,
-        "channel_id": null,
+        "enabled": true,
+        "channel_id": 1561349762098274346,
         "pending_users": []
       },
       "region": null,
-      "member_controls": {}
+      "member_controls": {
+        "837680779072110593": {
+          "speak": true,
+          "stream": true,
+          "soundboard": true
+        }
+      }
     }
   }
 }
