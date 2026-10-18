@@ -21,7 +21,7 @@
         "mode": "everyone",
         "outside_read": true,
         "outside_write": true,
-        "locked": true
+        "locked": false
       },
       "waiting_room": {
         "enabled": true,
