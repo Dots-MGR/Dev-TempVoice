@@ -22,7 +22,7 @@
       "allowed_users": [],
       "denied_users": [],
       "moderators": [],
-      "panel_message_id": null,
+      "panel_message_id": 1563635021951013027,
       "chat": {
         "mode": "everyone",
         "outside_read": true,
