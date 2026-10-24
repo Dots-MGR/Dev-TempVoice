@@ -18,7 +18,7 @@
       "moderators": [],
       "panel_message_id": 1563460492733976627,
       "chat": {
-        "mode": "everyone",
+        "mode": "voice_members",
         "outside_read": true,
         "outside_write": true,
         "locked": false
