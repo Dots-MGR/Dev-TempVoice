@@ -10,7 +10,7 @@
       "create_channel_id": 1563632968285683742,
       "category_id": 1563606207443501178,
       "default_name": "{user}'s Dormroom",
-      "default_limit": 0
+      "default_limit": 1
     }
   },
   "temporary_channels": {}
