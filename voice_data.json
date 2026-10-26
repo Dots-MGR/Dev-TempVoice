@@ -27,7 +27,9 @@
       "hidden": false,
       "allowed_users": [],
       "denied_users": [],
-      "moderators": [],
+      "moderators": [
+        837680779072110593
+      ],
       "panel_message_id": 1564337247086706849,
       "chat": {
         "mode": "everyone",
