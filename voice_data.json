@@ -36,8 +36,8 @@
         "locked": false
       },
       "waiting_room": {
-        "enabled": true,
-        "channel_id": 1564337964232736822,
+        "enabled": false,
+        "channel_id": null,
         "pending_users": []
       },
       "region": null,
