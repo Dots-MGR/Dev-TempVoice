@@ -15,8 +15,8 @@
     "1563966305982353438": {
       "create_channel_id": 1564320537709248712,
       "category_id": 1563966307056222269,
-      "default_name": "{user}'s rooM",
-      "default_limit": 1
+      "default_name": "{user}'s Room",
+      "default_limit": 10
     }
   },
   "temporary_channels": {
