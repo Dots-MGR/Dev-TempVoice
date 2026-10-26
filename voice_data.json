@@ -23,7 +23,7 @@
     "1564336218760806430": {
       "owner_id": 1428783305339437227,
       "guild_id": 1563966305982353438,
-      "locked": false,
+      "locked": true,
       "hidden": false,
       "allowed_users": [],
       "denied_users": [],
@@ -41,7 +41,13 @@
         "pending_users": []
       },
       "region": null,
-      "member_controls": {}
+      "member_controls": {
+        "1428783305339437227": {
+          "speak": true,
+          "stream": true,
+          "soundboard": true
+        }
+      }
     }
   }
 }
