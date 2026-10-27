@@ -27,7 +27,9 @@
       "hidden": false,
       "allowed_users": [],
       "denied_users": [],
-      "moderators": [],
+      "moderators": [
+        837680779072110593
+      ],
       "panel_message_id": 1564564579512754306,
       "chat": {
         "mode": "everyone",
@@ -41,7 +43,18 @@
         "pending_users": []
       },
       "region": null,
-      "member_controls": {}
+      "member_controls": {
+        "1428783305339437227": {
+          "speak": true,
+          "stream": true,
+          "soundboard": true
+        },
+        "837680779072110593": {
+          "speak": true,
+          "stream": true,
+          "soundboard": true
+        }
+      }
     }
   }
 }
