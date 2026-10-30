@@ -17,6 +17,12 @@
       "category_id": 1563966307056222269,
       "default_name": "{user}'s Room",
       "default_limit": 10
+    },
+    "1565701109019054102": {
+      "create_channel_id": 1565703422890483822,
+      "category_id": 1565701109912309953,
+      "default_name": "{user}'s Room",
+      "default_limit": 0
     }
   },
   "temporary_channels": {}
