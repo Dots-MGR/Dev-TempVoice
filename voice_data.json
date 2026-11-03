@@ -34,7 +34,7 @@
       "allowed_users": [],
       "denied_users": [],
       "moderators": [],
-      "panel_message_id": null,
+      "panel_message_id": 1567252940253700139,
       "chat": {
         "mode": "everyone",
         "outside_read": true,
